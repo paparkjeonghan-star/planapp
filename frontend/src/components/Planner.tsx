@@ -792,6 +792,77 @@ export default function Planner({ onPlanGenerated }: { onPlanGenerated?: (arg: a
     })
   }
 
+  function normalizeText(value: string) {
+    return value.trim().toLowerCase().replace(/\s+/g, '')
+  }
+
+  function formatHours(minutes: number) {
+    return `${(minutes / 60).toFixed(1)}시간`
+  }
+
+  function getSlotAnalysisText(slot: SlotType) {
+    const subjectName = subjectsMap[slot.subject || '']?.name || ''
+    return normalizeText(`${subjectName} ${slot.category || ''} ${slot.note || ''}`)
+  }
+
+  function analyzeTimetableIssues() {
+    if (!studentId) return ['학생을 먼저 선택해주세요.']
+    if (subjects.length === 0) return ['1단계: 학생별 공부 과목을 먼저 등록해주세요.']
+    if (weekSlots.length === 0) return ['시간표 블록이 아직 없어 과목 균형을 분석할 수 없습니다.']
+
+    const subjectMinutes = subjects.map((subject: any) => {
+      const subjectName = normalizeText(subject.name || '')
+      const minutes = weekSlots.reduce((sum, slot) => {
+        const slotText = getSlotAnalysisText(slot)
+        const matchedById = slot.subject && slot.subject === subject.id
+        const matchedByText = subjectName && slotText.includes(subjectName)
+        return matchedById || matchedByText ? sum + Math.max(0, parseHM(slot.end) - parseHM(slot.start)) : sum
+      }, 0)
+      return { subject, minutes }
+    })
+
+    const issues: string[] = []
+    const totalMinutes = Math.max(1, totalSlotMinutes)
+
+    subjectMinutes
+      .filter(({ minutes }) => minutes === 0)
+      .sort((a, b) => (b.subject.priority || 0) - (a.subject.priority || 0))
+      .forEach(({ subject }) => issues.push(`${subject.name}은/는 시간표에 없습니다.`))
+
+    subjectMinutes
+      .filter(({ minutes }) => minutes > 0)
+      .sort((a, b) => b.minutes - a.minutes)
+      .forEach(({ subject, minutes }) => {
+        const ratio = minutes / totalMinutes
+        const targetMinutes = Number(subject.weeklyTargetHours || 0) * 60
+        if (ratio >= 0.45 && minutes >= 120) {
+          issues.push(`${subject.name}이/가 너무 많이 차지합니다. (${formatHours(minutes)}, ${Math.round(ratio * 100)}%)`)
+        } else if (targetMinutes > 0 && minutes < targetMinutes * 0.5) {
+          issues.push(`${subject.name}이/가 목표보다 부족합니다. (${formatHours(minutes)} / 목표 ${formatHours(targetMinutes)})`)
+        }
+      })
+
+    return issues.length > 0 ? issues.slice(0, 3) : ['현재 과목 배분에서 큰 문제는 보이지 않습니다.']
+  }
+
+  async function saveIssuesToCounselingMemo() {
+    if (!studentId || planningIssues.length === 0) return
+
+    const stamp = new Date().toLocaleDateString('ko-KR')
+    const entry = [`[상담 기록 ${stamp}]`, ...planningIssues.map((issue, index) => `${index + 1}. ${issue}`)].join('\n')
+    const nextNotes = [studentDraft.notes.trim(), entry].filter(Boolean).join('\n\n')
+
+    try {
+      const saved = await api.updateStudent(studentId, { notes: nextNotes })
+      setStudentDraft((prev) => ({ ...prev, notes: nextNotes }))
+      setStudents((prev) => prev.map((student) => (student.id === studentId ? { ...student, ...saved, notes: nextNotes } : student)))
+      alert('상담 메모에 저장했습니다.')
+    } catch (err) {
+      console.error(err)
+      alert('상담 메모 저장에 실패했습니다.')
+    }
+  }
+
   const totalPlannedMinutes = sessions.reduce((sum, session: any) => sum + (session.durationMinutes || 0), 0)
   const weekSlots = slots.filter((slot) => !slot.weekStart || slot.weekStart === weekStart)
   const totalSlotMinutes = weekSlots.reduce((sum, slot) => sum + Math.max(0, parseHM(slot.end) - parseHM(slot.start)), 0)
@@ -807,6 +878,7 @@ export default function Planner({ onPlanGenerated }: { onPlanGenerated?: (arg: a
     acc[category] = (acc[category] || 0) + Math.max(0, parseHM(slot.end) - parseHM(slot.start))
     return acc
   }, {})
+  const planningIssues = analyzeTimetableIssues()
 
   return (
     <div>
@@ -1044,6 +1116,30 @@ export default function Planner({ onPlanGenerated }: { onPlanGenerated?: (arg: a
                   ))}
                 </div>
               </div>
+            </div>
+          </section>
+
+          <section className="mt-4 rounded bg-white p-4 shadow">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h3 className="text-lg font-semibold">계획 문제점</h3>
+                <p className="mt-1 text-sm text-gray-500">1단계 과목 설정을 기준으로 이번 주 시간표를 간단히 분석합니다.</p>
+              </div>
+              <button
+                className="rounded bg-amber-600 px-4 py-2 text-white disabled:cursor-not-allowed disabled:bg-gray-300"
+                disabled={!studentId || planningIssues.length === 0}
+                onClick={saveIssuesToCounselingMemo}
+              >
+                상담 메모에 저장
+              </button>
+            </div>
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+              {planningIssues.map((issue, index) => (
+                <div key={`${issue}-${index}`} className="rounded border border-amber-200 bg-amber-50 p-3">
+                  <div className="text-xs font-semibold text-amber-700">문제 {index + 1}</div>
+                  <div className="mt-1 text-sm text-slate-800">{issue}</div>
+                </div>
+              ))}
             </div>
           </section>
 

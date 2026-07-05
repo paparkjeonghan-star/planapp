@@ -1,6 +1,7 @@
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:4000'
 const LOCAL_STUDENTS_KEY = 'planapp.students'
 const LOCAL_TIMETABLES_KEY = 'planapp.timetables'
+const LOCAL_SUBJECTS_KEY = 'planapp.subjects'
 
 type LocalStudent = {
   id: string
@@ -46,6 +47,20 @@ function writeLocalTimetables(timetables: Record<string, any>) {
 
 function localTimetableKey(studentId: string, weekStart: string) {
   return `${studentId}:${weekStart}`
+}
+
+function readLocalSubjects(): any[] {
+  if (!canUseLocalStorage()) return []
+  try {
+    return JSON.parse(window.localStorage.getItem(LOCAL_SUBJECTS_KEY) || '[]')
+  } catch {
+    return []
+  }
+}
+
+function writeLocalSubjects(subjects: any[]) {
+  if (!canUseLocalStorage()) return
+  window.localStorage.setItem(LOCAL_SUBJECTS_KEY, JSON.stringify(subjects))
 }
 
 function createLocalId() {
@@ -99,31 +114,46 @@ export async function generatePlan(studentId:string, weekStart:string){
 }
 
 export async function getSubjects(studentId:string){
-  const q = new URL(`${API_BASE}/api/subjects`)
-  q.searchParams.set('studentId', studentId)
-  const res = await fetch(q.toString())
-  if (!res.ok) throw new Error('Failed to fetch subjects')
-  return res.json()
+  try {
+    const q = new URL(`${API_BASE}/api/subjects`)
+    q.searchParams.set('studentId', studentId)
+    return await fetchJson(q.toString())
+  } catch (err) {
+    console.warn('Using local subjects because the API is unavailable.', err)
+    return readLocalSubjects().filter((subject) => !subject.studentId || subject.studentId === studentId)
+  }
 }
 
 export async function createSubject(name:string, weeklyTargetHours:number, priority:number, color:string, studentId?:string){
-  const res = await fetch(`${API_BASE}/api/subjects`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, weeklyTargetHours, priority, color, studentId })
-  })
-  if (!res.ok) throw new Error('Create subject failed')
-  return res.json()
+  const payload = { name, weeklyTargetHours, priority, color, studentId: studentId || null }
+  try {
+    return await fetchJson(`${API_BASE}/api/subjects`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    })
+  } catch (err) {
+    console.warn('Creating a local subject because the API is unavailable.', err)
+    const subject = { id: createLocalId(), ...payload }
+    writeLocalSubjects([...readLocalSubjects(), subject])
+    return subject
+  }
 }
 
 export async function updateSubject(id:string, patch:any){
-  const res = await fetch(`${API_BASE}/api/subjects/${id}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(patch)
-  })
-  if (!res.ok) throw new Error('Update subject failed')
-  return res.json()
+  try {
+    return await fetchJson(`${API_BASE}/api/subjects/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch)
+    })
+  } catch (err) {
+    console.warn('Updating a local subject because the API is unavailable.', err)
+    const subjects = readLocalSubjects()
+    const updatedSubjects = subjects.map((subject) => (subject.id === id ? { ...subject, ...patch } : subject))
+    writeLocalSubjects(updatedSubjects)
+    return updatedSubjects.find((subject) => subject.id === id)
+  }
 }
 
 export async function createStudent(name:string, grade?:string, notes?:string, school?:string, scores?:string){
