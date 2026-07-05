@@ -976,6 +976,41 @@ export default function Planner({ onPlanGenerated }: { onPlanGenerated?: (arg: a
                 </div>
               ) : null}
 
+              {selectedStudent ? (
+                <div className="mt-4 rounded border border-indigo-100 bg-indigo-50 p-3">
+                  <div className="mb-3">
+                    <h4 className="font-semibold text-slate-800">전체 공부 과목 설정</h4>
+                    <p className="mt-1 text-xs text-gray-500">등록한 과목을 기준으로 시간표 비중과 누락 과목을 분석합니다.</p>
+                  </div>
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-4">
+                    <input className="rounded border p-2" placeholder="과목명" value={newSubject.name} onChange={(e) => setNewSubject((prev) => ({ ...prev, name: e.target.value }))} />
+                    <input className="rounded border p-2" type="number" min={0} placeholder="주간 목표 시간" value={newSubject.weeklyTargetHours} onChange={(e) => setNewSubject((prev) => ({ ...prev, weeklyTargetHours: Number(e.target.value) }))} />
+                    <input className="rounded border p-2" type="number" min={0} max={10} placeholder="우선순위" value={newSubject.priority} onChange={(e) => setNewSubject((prev) => ({ ...prev, priority: Number(e.target.value) }))} />
+                    <input className="h-11 rounded border" type="color" value={newSubject.color} onChange={(e) => setNewSubject((prev) => ({ ...prev, color: e.target.value }))} />
+                  </div>
+                  <button className="mt-3 rounded bg-indigo-600 px-4 py-2 text-white" onClick={createSubject}>
+                    과목 추가
+                  </button>
+                  <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    {subjects.length === 0 ? (
+                      <div className="rounded border border-dashed border-gray-300 bg-white p-3 text-sm text-gray-500">아직 등록된 과목이 없습니다.</div>
+                    ) : (
+                      subjects.map((subject: any) => (
+                        <div key={subject.id} className="flex items-center justify-between gap-3 rounded border border-gray-200 bg-white p-3">
+                          <div>
+                            <div className="font-semibold">{subject.name}</div>
+                            <div className="text-xs text-gray-500">
+                              목표 {subject.weeklyTargetHours || 0}시간 / 우선순위 {subject.priority || 0}
+                            </div>
+                          </div>
+                          <input className="h-9 w-12 cursor-pointer rounded border" type="color" value={subject.color || '#60a5fa'} onChange={(e) => updateSubjectColor(subject.id, e.target.value)} />
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              ) : null}
+
               <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-4">
                 <input className="rounded border p-2" placeholder="새 학생 이름" value={newStudentName} onChange={(e) => setNewStudentName(e.target.value)} />
                 <input className="rounded border p-2" placeholder="학교" value={newStudentSchool} onChange={(e) => setNewStudentSchool(e.target.value)} />
