@@ -784,6 +784,28 @@ export default function Planner({ onPlanGenerated }: { onPlanGenerated?: (arg: a
     saveTimetable(next).catch((err) => console.error('Auto-save failed', err))
   }
 
+  function deleteCurrentWeekSlots() {
+    if (!studentId || !weekStart) {
+      alert('학생과 주차를 먼저 선택해주세요.')
+      return
+    }
+
+    const weekSlotCount = slots.filter((slot) => !slot.weekStart || slot.weekStart === weekStart).length
+    if (weekSlotCount === 0) {
+      alert('삭제할 이번 주 블록이 없습니다.')
+      return
+    }
+
+    const confirmed = window.confirm(`이번 주 블록 ${weekSlotCount}개를 모두 삭제할까요?`)
+    if (!confirmed) return
+
+    const next = slots.filter((slot) => slot.weekStart && slot.weekStart !== weekStart)
+    setSlots(next)
+    setSessions([])
+    setEditing(null)
+    saveTimetable(next).catch((err) => console.error('Delete week slots failed', err))
+  }
+
   function toggleSlotCompleted(id: string) {
     setSlots((prev) => {
       const next = prev.map((slot) => (slot.id === id ? { ...slot, completed: !slot.completed } : slot))
@@ -1026,6 +1048,9 @@ export default function Planner({ onPlanGenerated }: { onPlanGenerated?: (arg: a
                 </button>
                 <button className="rounded bg-sky-700 px-4 py-2 text-white" onClick={importPreviousWeekTimetable}>
                   Last week
+                </button>
+                <button className="rounded bg-red-600 px-4 py-2 text-white" onClick={deleteCurrentWeekSlots}>
+                  이번 주 삭제
                 </button>
                 <button className="rounded bg-indigo-600 px-4 py-2 text-white" onClick={generatePlan}>
                   자동 생성
