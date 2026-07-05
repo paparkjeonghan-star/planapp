@@ -1,5 +1,6 @@
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:4000'
 const LOCAL_STUDENTS_KEY = 'planapp.students'
+const LOCAL_TIMETABLES_KEY = 'planapp.timetables'
 
 type LocalStudent = {
   id: string
@@ -29,6 +30,24 @@ function writeLocalStudents(students: LocalStudent[]) {
   window.localStorage.setItem(LOCAL_STUDENTS_KEY, JSON.stringify(students))
 }
 
+function readLocalTimetables(): Record<string, any> {
+  if (!canUseLocalStorage()) return {}
+  try {
+    return JSON.parse(window.localStorage.getItem(LOCAL_TIMETABLES_KEY) || '{}')
+  } catch {
+    return {}
+  }
+}
+
+function writeLocalTimetables(timetables: Record<string, any>) {
+  if (!canUseLocalStorage()) return
+  window.localStorage.setItem(LOCAL_TIMETABLES_KEY, JSON.stringify(timetables))
+}
+
+function localTimetableKey(studentId: string, weekStart: string) {
+  return `${studentId}:${weekStart}`
+}
+
 function createLocalId() {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) return crypto.randomUUID()
   return `local-${Date.now()}-${Math.random().toString(36).slice(2)}`
@@ -50,18 +69,27 @@ export async function getStudents(){
 }
 
 export async function getTimetable(studentId:string, weekStart:string){
-  const q = new URL(`${API_BASE}/api/timetables`)
-  q.searchParams.set('studentId', studentId)
-  q.searchParams.set('weekStart', weekStart)
-  const res = await fetch(q.toString())
-  if (!res.ok) throw new Error('No timetable')
-  return res.json()
+  try {
+    const q = new URL(`${API_BASE}/api/timetables`)
+    q.searchParams.set('studentId', studentId)
+    q.searchParams.set('weekStart', weekStart)
+    return await fetchJson(q.toString())
+  } catch (err) {
+    console.warn('Using local timetable because the API is unavailable.', err)
+    return readLocalTimetables()[localTimetableKey(studentId, weekStart)] || { studentId, weekStart, slots: [] }
+  }
 }
 
 export async function saveTimetable(payload:any){
-  const res = await fetch(`${API_BASE}/api/timetables`, { method: 'POST', headers: { 'Content-Type':'application/json' }, body: JSON.stringify(payload) })
-  if (!res.ok) throw new Error('Save failed')
-  return res.json()
+  try {
+    return await fetchJson(`${API_BASE}/api/timetables`, { method: 'POST', headers: { 'Content-Type':'application/json' }, body: JSON.stringify(payload) })
+  } catch (err) {
+    console.warn('Saving local timetable because the API is unavailable.', err)
+    const timetables = readLocalTimetables()
+    timetables[localTimetableKey(payload.studentId, payload.weekStart)] = payload
+    writeLocalTimetables(timetables)
+    return payload
+  }
 }
 
 export async function generatePlan(studentId:string, weekStart:string){

@@ -47,6 +47,162 @@ function parseScores(raw?: string) {
   }
 }
 
+type OcrLine = {
+  text: string
+  bbox?: { x0: number; y0: number; x1: number; y1: number }
+}
+
+type ImportedSlotDraft = SlotType & {
+  importedText: string
+}
+
+function cleanOcrText(text: string) {
+  return text
+    .replace(/[|ㅣ]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function minutesToHM(minutes: number) {
+  const clamped = Math.max(0, Math.min(24 * 60 - 1, minutes))
+  return `${String(Math.floor(clamped / 60)).padStart(2, '0')}:${String(clamped % 60).padStart(2, '0')}`
+}
+
+function roundToHalfHour(minutes: number) {
+  return Math.round(minutes / 30) * 30
+}
+
+function parseOcrTime(value: string) {
+  const match = value.match(/(\d{1,2})\D?([0-5]\d)?/)
+  if (!match) return null
+  const hour = Number(match[1])
+  const minute = match[2] ? Number(match[2]) : 0
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null
+  return hour * 60 + minute
+}
+
+function findOcrTimeRange(text: string) {
+  const normalized = text.replace(/[０-９]/g, (char) => String.fromCharCode(char.charCodeAt(0) - 0xfee0))
+  const match = normalized.match(/(\d{1,2}[:.]?\s*[0-5]?\d?)\s*[~-]\s*(\d{1,2}[:.]?\s*[0-5]?\d?)/)
+  if (!match) return null
+  const start = parseOcrTime(match[1])
+  const end = parseOcrTime(match[2])
+  if (start === null || end === null || end <= start) return null
+  return { start, end }
+}
+
+function inferDayFromX(x: number, width: number) {
+  const leftTimeColumn = width * 0.105
+  const usableWidth = Math.max(1, width - leftTimeColumn)
+  return Math.max(0, Math.min(6, Math.floor(((x - leftTimeColumn) / usableWidth) * 7)))
+}
+
+function inferMinutesFromY(y: number, height: number) {
+  const gridTop = height * 0.055
+  const gridBottom = height * 0.99
+  const ratio = Math.max(0, Math.min(1, (y - gridTop) / Math.max(1, gridBottom - gridTop)))
+  return roundToHalfHour(6 * 60 + ratio * 18 * 60)
+}
+
+function isNoiseOcrLine(text: string) {
+  if (!text || text.length < 2) return true
+  if (/^(시간|요일|월요일|화요일|수요일|목요일|금요일|토요일|일요일)$/i.test(text)) return true
+  if (/^\d{1,2}[:.]\d{2}\s*[-~]\s*\d{1,2}[:.]\d{2}$/.test(text)) return true
+  if (/^[□☐✓✔]+$/.test(text)) return true
+  return false
+}
+
+function extractOcrLines(data: any): OcrLine[] {
+  const lines = Array.isArray(data?.lines) ? data.lines : []
+  if (lines.length > 0) {
+    return lines
+      .map((line: any) => ({ text: cleanOcrText(line.text || ''), bbox: line.bbox }))
+      .filter((line: OcrLine) => !isNoiseOcrLine(line.text))
+  }
+
+  const blockLines = Array.isArray(data?.blocks)
+    ? data.blocks.flatMap((block: any) =>
+        (block.paragraphs || []).flatMap((paragraph: any) =>
+          (paragraph.lines || []).map((line: any) => ({ text: cleanOcrText(line.text || ''), bbox: line.bbox }))
+        )
+      )
+    : []
+  if (blockLines.length > 0) {
+    return blockLines.filter((line: OcrLine) => !isNoiseOcrLine(line.text))
+  }
+
+  return String(data?.text || '')
+    .split('\n')
+    .map((text) => ({ text: cleanOcrText(text) }))
+    .filter((line) => !isNoiseOcrLine(line.text))
+}
+
+function buildImportedSlots(lines: OcrLine[], imageWidth: number, imageHeight: number, targetWeekStart: string): ImportedSlotDraft[] {
+  const drafts = lines
+    .map((line) => {
+      const bbox = line.bbox
+      const range = findOcrTimeRange(line.text)
+      const centerX = bbox ? (bbox.x0 + bbox.x1) / 2 : imageWidth / 2
+      const day = bbox ? inferDayFromX(centerX, imageWidth) : 0
+      const startMinutes = range?.start ?? (bbox ? inferMinutesFromY(bbox.y0, imageHeight) : 18 * 60)
+      const endMinutes = range?.end ?? (bbox ? Math.max(startMinutes + 30, inferMinutesFromY(bbox.y1, imageHeight)) : startMinutes + 60)
+      const note = line.text.replace(/\[?\d{1,2}[:.]?\s*[0-5]?\d?\s*[~-]\s*\d{1,2}[:.]?\s*[0-5]?\d?\]?/g, '').trim() || line.text
+
+      return {
+        id: uuidv4(),
+        day,
+        start: minutesToHM(startMinutes),
+        end: minutesToHM(endMinutes),
+        category: categorizeSubjectLabel(note),
+        studyType: 'Image import',
+        note,
+        completed: false,
+        weekStart: targetWeekStart,
+        importedText: line.text
+      }
+    })
+    .filter((slot) => parseHM(slot.end) > parseHM(slot.start))
+    .sort((a, b) => a.day - b.day || parseHM(a.start) - parseHM(b.start))
+
+  const merged: ImportedSlotDraft[] = []
+  for (const draft of drafts) {
+    const previous = merged[merged.length - 1]
+    const shouldMerge =
+      previous &&
+      previous.day === draft.day &&
+      parseHM(draft.start) <= parseHM(previous.end) + 30 &&
+      !findOcrTimeRange(previous.importedText) &&
+      !findOcrTimeRange(draft.importedText)
+
+    if (shouldMerge) {
+      previous.end = parseHM(draft.end) > parseHM(previous.end) ? draft.end : previous.end
+      previous.note = `${previous.note}\n${draft.note}`
+      previous.importedText = `${previous.importedText}\n${draft.importedText}`
+      previous.category = categorizeSubjectLabel(previous.note)
+    } else {
+      merged.push(draft)
+    }
+  }
+
+  return merged
+}
+
+function readImageSize(file: File) {
+  return new Promise<{ width: number; height: number }>((resolve, reject) => {
+    const image = new Image()
+    const url = URL.createObjectURL(file)
+    image.onload = () => {
+      URL.revokeObjectURL(url)
+      resolve({ width: image.naturalWidth, height: image.naturalHeight })
+    }
+    image.onerror = () => {
+      URL.revokeObjectURL(url)
+      reject(new Error('Image load failed'))
+    }
+    image.src = url
+  })
+}
+
 export default function Planner({ onPlanGenerated }: { onPlanGenerated?: (arg: any) => void }) {
   const [slots, setSlots] = useState<SlotType[]>([])
   const [editing, setEditing] = useState<SlotType | null>(null)
@@ -72,6 +228,9 @@ export default function Planner({ onPlanGenerated }: { onPlanGenerated?: (arg: a
     note: ''
   })
   const [activeTab, setActiveTab] = useState<'planner' | 'plan'>('planner')
+  const [imageImportStatus, setImageImportStatus] = useState('')
+  const [imageImportBusy, setImageImportBusy] = useState(false)
+  const [imageImportCount, setImageImportCount] = useState(0)
   const saveTimerRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
   const timetableSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const dragRef = useRef<any>(null)
@@ -425,6 +584,57 @@ export default function Planner({ onPlanGenerated }: { onPlanGenerated?: (arg: a
     saveTimetable(next).catch((err) => console.error('Auto-save failed', err))
   }
 
+  async function importSlotsFromImage(file?: File) {
+    if (!file) return
+    if (!studentId || !weekStart) {
+      alert('Select a student and week start before importing an image.')
+      return
+    }
+
+    setImageImportBusy(true)
+    setImageImportStatus('Reading image...')
+    setImageImportCount(0)
+
+    let worker: any
+    try {
+      const [{ createWorker }, imageSize] = await Promise.all([
+        import('tesseract.js'),
+        readImageSize(file)
+      ])
+
+      setImageImportStatus('Recognizing text...')
+      worker = await createWorker('kor+eng', 1, {
+        logger: (message: any) => {
+          if (message?.status) {
+            const progress = typeof message.progress === 'number' ? ` ${Math.round(message.progress * 100)}%` : ''
+            setImageImportStatus(`${message.status}${progress}`)
+          }
+        }
+      })
+
+      const result = await worker.recognize(file, {}, { blocks: true, text: true })
+      const lines = extractOcrLines(result.data)
+      const imported = buildImportedSlots(lines, imageSize.width, imageSize.height, weekStart)
+
+      if (imported.length === 0) {
+        setImageImportStatus('No blocks found. Try a clearer screenshot or photo.')
+        return
+      }
+
+      const next = [...slots, ...imported.map(({ importedText, ...slot }) => slot)]
+      setSlots(next)
+      setImageImportCount(imported.length)
+      setImageImportStatus(`Imported ${imported.length} blocks. You can edit subjects and details next.`)
+      saveTimetable(next).catch((err) => console.error('Image import save failed', err))
+    } catch (err) {
+      console.error(err)
+      setImageImportStatus('Image import failed. Try a sharper image.')
+    } finally {
+      if (worker) await worker.terminate()
+      setImageImportBusy(false)
+    }
+  }
+
   function saveSlot(updated: SlotType) {
     const normalized = {
       ...updated,
@@ -633,6 +843,23 @@ export default function Planner({ onPlanGenerated }: { onPlanGenerated?: (arg: a
                 <button className="rounded bg-indigo-600 px-4 py-2 text-white" onClick={generatePlan}>
                   자동 생성
                 </button>
+              </div>
+              <div className="mt-4 rounded border border-dashed border-slate-300 bg-slate-50 p-3">
+                <div className="mb-2 text-sm font-semibold text-slate-700">Import blocks from photo</div>
+                <input
+                  className="block w-full cursor-pointer rounded border bg-white p-2 text-sm"
+                  type="file"
+                  accept="image/*"
+                  disabled={imageImportBusy}
+                  onChange={(e) => {
+                    importSlotsFromImage(e.target.files?.[0])
+                    e.currentTarget.value = ''
+                  }}
+                />
+                <div className="mt-2 text-xs text-slate-500">
+                  {imageImportStatus || 'Upload a timetable photo. Text becomes block notes first; subjects can be edited later.'}
+                </div>
+                {imageImportCount > 0 ? <div className="mt-1 text-xs font-medium text-emerald-700">{imageImportCount} blocks added</div> : null}
               </div>
             </section>
           </div>
