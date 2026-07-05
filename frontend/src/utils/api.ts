@@ -1,9 +1,52 @@
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:4000'
+const LOCAL_STUDENTS_KEY = 'planapp.students'
+
+type LocalStudent = {
+  id: string
+  name: string
+  grade?: string
+  notes?: string
+  school?: string
+  scores?: string
+  subjects?: any[]
+}
+
+function canUseLocalStorage() {
+  return typeof window !== 'undefined' && Boolean(window.localStorage)
+}
+
+function readLocalStudents(): LocalStudent[] {
+  if (!canUseLocalStorage()) return []
+  try {
+    return JSON.parse(window.localStorage.getItem(LOCAL_STUDENTS_KEY) || '[]')
+  } catch {
+    return []
+  }
+}
+
+function writeLocalStudents(students: LocalStudent[]) {
+  if (!canUseLocalStorage()) return
+  window.localStorage.setItem(LOCAL_STUDENTS_KEY, JSON.stringify(students))
+}
+
+function createLocalId() {
+  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) return crypto.randomUUID()
+  return `local-${Date.now()}-${Math.random().toString(36).slice(2)}`
+}
+
+async function fetchJson(url: string, init?: RequestInit) {
+  const res = await fetch(url, init)
+  if (!res.ok) throw new Error(`Request failed: ${res.status}`)
+  return res.json()
+}
 
 export async function getStudents(){
-  const res = await fetch(`${API_BASE}/api/students`)
-  if (!res.ok) throw new Error('Failed to fetch')
-  return res.json()
+  try {
+    return await fetchJson(`${API_BASE}/api/students`)
+  } catch (err) {
+    console.warn('Using local students because the API is unavailable.', err)
+    return readLocalStudents()
+  }
 }
 
 export async function getTimetable(studentId:string, weekStart:string){
@@ -56,23 +99,36 @@ export async function updateSubject(id:string, patch:any){
 }
 
 export async function createStudent(name:string, grade?:string, notes?:string, school?:string, scores?:string){
-  const res = await fetch(`${API_BASE}/api/students`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, grade, notes, school, scores })
-  })
-  if (!res.ok) throw new Error('Create student failed')
-  return res.json()
+  const payload = { name, grade, notes, school, scores }
+  try {
+    return await fetchJson(`${API_BASE}/api/students`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    })
+  } catch (err) {
+    console.warn('Creating a local student because the API is unavailable.', err)
+    const student = { id: createLocalId(), ...payload, subjects: [] }
+    const students = readLocalStudents()
+    writeLocalStudents([...students, student])
+    return student
+  }
 }
 
 export async function updateStudent(id:string, patch:any){
-  const res = await fetch(`${API_BASE}/api/students/${id}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(patch)
-  })
-  if (!res.ok) throw new Error('Update student failed')
-  return res.json()
+  try {
+    return await fetchJson(`${API_BASE}/api/students/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch)
+    })
+  } catch (err) {
+    console.warn('Updating a local student because the API is unavailable.', err)
+    const students = readLocalStudents()
+    const updatedStudents = students.map((student) => (student.id === id ? { ...student, ...patch } : student))
+    writeLocalStudents(updatedStudents)
+    return updatedStudents.find((student) => student.id === id)
+  }
 }
 
 export async function updateSession(id:string, patch:any){
