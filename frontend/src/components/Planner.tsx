@@ -92,7 +92,7 @@ function findOcrTimeRange(text: string) {
 }
 
 function inferDayFromX(x: number, width: number) {
-  const leftTimeColumn = width * 0.105
+  const leftTimeColumn = width * 0.123
   const usableWidth = Math.max(1, width - leftTimeColumn)
   return Math.max(0, Math.min(6, Math.floor(((x - leftTimeColumn) / usableWidth) * 7)))
 }
@@ -137,15 +137,83 @@ function extractOcrLines(data: any): OcrLine[] {
     .filter((line) => !isNoiseOcrLine(line.text))
 }
 
+function hasUsableBbox(line: OcrLine) {
+  const bbox = line.bbox
+  return Boolean(
+    bbox &&
+      Number.isFinite(bbox.x0) &&
+      Number.isFinite(bbox.y0) &&
+      Number.isFinite(bbox.x1) &&
+      Number.isFinite(bbox.y1) &&
+      bbox.x1 > bbox.x0 &&
+      bbox.y1 > bbox.y0
+  )
+}
+
+function parseTsvPositionedLines(tsv?: string | null): OcrLine[] {
+  if (!tsv) return []
+  const rows = tsv.trim().split(/\r?\n/)
+  const header = rows.shift()?.split('\t') || []
+  const indexes = {
+    level: header.indexOf('level'),
+    block: header.indexOf('block_num'),
+    paragraph: header.indexOf('par_num'),
+    line: header.indexOf('line_num'),
+    left: header.indexOf('left'),
+    top: header.indexOf('top'),
+    width: header.indexOf('width'),
+    height: header.indexOf('height'),
+    text: header.indexOf('text')
+  }
+  if (Object.values(indexes).some((index) => index < 0)) return []
+
+  const groups = new Map<string, { words: string[]; x0: number; y0: number; x1: number; y1: number }>()
+  for (const row of rows) {
+    const cells = row.split('\t')
+    if (cells[indexes.level] !== '5') continue
+
+    const word = cleanOcrText(cells[indexes.text] || '')
+    const left = Number(cells[indexes.left])
+    const top = Number(cells[indexes.top])
+    const wordWidth = Number(cells[indexes.width])
+    const wordHeight = Number(cells[indexes.height])
+    if (!word || ![left, top, wordWidth, wordHeight].every(Number.isFinite) || wordWidth <= 0 || wordHeight <= 0) continue
+
+    const key = `${cells[indexes.block]}:${cells[indexes.paragraph]}:${cells[indexes.line]}`
+    const group = groups.get(key)
+    if (group) {
+      group.words.push(word)
+      group.x0 = Math.min(group.x0, left)
+      group.y0 = Math.min(group.y0, top)
+      group.x1 = Math.max(group.x1, left + wordWidth)
+      group.y1 = Math.max(group.y1, top + wordHeight)
+    } else {
+      groups.set(key, { words: [word], x0: left, y0: top, x1: left + wordWidth, y1: top + wordHeight })
+    }
+  }
+
+  return Array.from(groups.values())
+    .map((group) => ({ text: cleanOcrText(group.words.join(' ')), bbox: { x0: group.x0, y0: group.y0, x1: group.x1, y1: group.y1 } }))
+    .filter((line) => !isNoiseOcrLine(line.text) && hasUsableBbox(line))
+}
+
+function extractPositionedOcrLines(data: any): OcrLine[] {
+  const tsvLines = parseTsvPositionedLines(data?.tsv)
+  if (tsvLines.length > 0) return tsvLines
+
+  return extractOcrLines(data).filter(hasUsableBbox)
+}
+
 function buildImportedSlots(lines: OcrLine[], imageWidth: number, imageHeight: number, targetWeekStart: string): ImportedSlotDraft[] {
   const drafts = lines
+    .filter(hasUsableBbox)
     .map((line) => {
-      const bbox = line.bbox
+      const bbox = line.bbox!
       const range = findOcrTimeRange(line.text)
-      const centerX = bbox ? (bbox.x0 + bbox.x1) / 2 : imageWidth / 2
-      const day = bbox ? inferDayFromX(centerX, imageWidth) : 0
-      const startMinutes = range?.start ?? (bbox ? inferMinutesFromY(bbox.y0, imageHeight) : 18 * 60)
-      const endMinutes = range?.end ?? (bbox ? Math.max(startMinutes + 30, inferMinutesFromY(bbox.y1, imageHeight)) : startMinutes + 60)
+      const centerX = (bbox.x0 + bbox.x1) / 2
+      const day = inferDayFromX(centerX, imageWidth)
+      const startMinutes = range?.start ?? inferMinutesFromY(bbox.y0, imageHeight)
+      const endMinutes = range?.end ?? Math.max(startMinutes + 30, inferMinutesFromY(bbox.y1, imageHeight))
       const note = line.text.replace(/\[?\d{1,2}[:.]?\s*[0-5]?\d?\s*[~-]\s*\d{1,2}[:.]?\s*[0-5]?\d?\]?/g, '').trim() || line.text
 
       return {
@@ -655,8 +723,8 @@ export default function Planner({ onPlanGenerated }: { onPlanGenerated?: (arg: a
         }
       })
 
-      const result = await worker.recognize(file, {}, { blocks: true, text: true })
-      const lines = extractOcrLines(result.data)
+      const result = await worker.recognize(file, {}, { blocks: true, text: true, tsv: true })
+      const lines = extractPositionedOcrLines(result.data)
       const imported = buildImportedSlots(lines, imageSize.width, imageSize.height, weekStart)
 
       if (imported.length === 0) {
