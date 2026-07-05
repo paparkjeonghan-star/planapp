@@ -203,6 +203,13 @@ function readImageSize(file: File) {
   })
 }
 
+function shiftDateString(dateString: string, dayOffset: number) {
+  const date = new Date(`${dateString}T00:00:00`)
+  if (Number.isNaN(date.getTime())) return ''
+  date.setDate(date.getDate() + dayOffset)
+  return date.toISOString().slice(0, 10)
+}
+
 export default function Planner({ onPlanGenerated }: { onPlanGenerated?: (arg: any) => void }) {
   const [slots, setSlots] = useState<SlotType[]>([])
   const [editing, setEditing] = useState<SlotType | null>(null)
@@ -301,6 +308,42 @@ export default function Planner({ onPlanGenerated }: { onPlanGenerated?: (arg: a
       console.error('Failed to load weekly timetable', err)
       setSlots([])
       setSessions([])
+    }
+  }
+
+  async function importPreviousWeekTimetable() {
+    if (!studentId || !weekStart) {
+      alert('Select a student and week start before importing last week.')
+      return
+    }
+
+    const previousWeekStart = shiftDateString(weekStart, -7)
+    if (!previousWeekStart) {
+      alert('Invalid week start date.')
+      return
+    }
+
+    try {
+      const timetable = await api.getTimetable(studentId, previousWeekStart)
+      const copiedSlots = mapServerSlots(timetable, weekStart).map((slot: SlotType) => ({
+        ...slot,
+        id: uuidv4(),
+        completed: false,
+        weekStart
+      }))
+
+      if (copiedSlots.length === 0) {
+        alert('No blocks found from last week.')
+        return
+      }
+
+      setSlots(copiedSlots)
+      setSessions([])
+      await saveTimetable(copiedSlots)
+      alert(`Imported ${copiedSlots.length} blocks from last week.`)
+    } catch (err) {
+      console.error(err)
+      alert('Failed to import last week.')
     }
   }
 
@@ -839,6 +882,9 @@ export default function Planner({ onPlanGenerated }: { onPlanGenerated?: (arg: a
                 </button>
                 <button className="rounded bg-slate-700 px-4 py-2 text-white" onClick={loadTimetable}>
                   불러오기
+                </button>
+                <button className="rounded bg-sky-700 px-4 py-2 text-white" onClick={importPreviousWeekTimetable}>
+                  Last week
                 </button>
                 <button className="rounded bg-indigo-600 px-4 py-2 text-white" onClick={generatePlan}>
                   자동 생성
