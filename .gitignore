@@ -13,3 +13,5 @@ backend/prisma/dev.db
 backend/prisma/dev.db-journal
 
 test1000/
+
+.vercel
