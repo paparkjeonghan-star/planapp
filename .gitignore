@@ -1,0 +1,15 @@
+node_modules/
+dist/
+.vercel/
+
+.env
+.env.*
+
+*.log
+server.out.log
+server.err.log
+
+backend/prisma/dev.db
+backend/prisma/dev.db-journal
+
+test1000/
