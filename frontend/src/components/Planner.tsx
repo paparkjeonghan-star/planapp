@@ -732,7 +732,8 @@ export default function Planner({ onPlanGenerated }: { onPlanGenerated?: (arg: a
         return
       }
 
-      const next = [...slots, ...imported.map(({ importedText, ...slot }) => slot)]
+      const existingManualSlots = slots.filter((slot) => slot.studyType !== 'Image import')
+      const next = [...existingManualSlots, ...imported.map(({ importedText, ...slot }) => slot)]
       setSlots(next)
       setImageImportCount(imported.length)
       setImageImportStatus(`Imported ${imported.length} blocks. You can edit subjects and details next.`)
